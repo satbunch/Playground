@@ -13,7 +13,7 @@ export function statement (invoice, plays) {
     volumeCredits += Math.max(perf.audience - 30, 0);
     // 喜劇のときは10人につき、さらにポイントを加算
     if ("comedy" === play.type) volumeCredits += Math.floor(perf.audience / 5);
-
+    //
     // 注文の内訳を出力
     result += ` ${play.name}: ${format(thisAmount/100)} (${perf.audience} seats)\n`;
     totalAmount += thisAmount;
@@ -24,23 +24,23 @@ export function statement (invoice, plays) {
 }
 
 function amountFor(perf, play) {
-  let thisAmount = 0;
+  let result = 0;
   switch (play.type) {
   case "tragedy":
-    thisAmount = 40000;
+    result = 40000;
     if (perf.audience > 30) {
-      thisAmount += 1000 * (perf.audience - 30);
+      result += 1000 * (perf.audience - 30);
     }
     break;
   case "comedy":
-    thisAmount = 30000;
+    result = 30000;
     if (perf.audience > 20) {
-      thisAmount += 1000 + 500 * (perf.audience - 20);
+      result += 1000 + 500 * (perf.audience - 20);
     }
-    thisAmount += 300 * perf.audience;
+    result += 300 * perf.audience;
     break;
   default:
     throw new Error(`unknown type: ${play.type}`);
   }
-  return thisAmount;
+  return result;
 }
