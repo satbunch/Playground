@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { AreaLoader, computeSegments, fetchRadius, originKey, type FetchWays, type StoredWays } from "./area";
+import {
+  AreaLoader,
+  WALK_NETWORK_VERSION,
+  computeSegments,
+  fetchRadius,
+  originKey,
+  type FetchWays,
+  type StoredWays,
+} from "./area";
 import { haversine, type LatLon } from "./geo";
 import type { OsmWay } from "./graph";
 
@@ -246,6 +254,31 @@ describe("AreaLoader のブラウザ保存", () => {
     const area = await new AreaLoader(f, { store }).load(origin, 500);
     expect(area.start).toBeDefined();
     expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["バージョンが無い", undefined],
+    ["定義が古い", 1],
+  ])("%s保存データは期限内でも使わず、取り直す", async (_label, networkVersion) => {
+    const store = memoryStore();
+    const now = 1_000_000;
+    const key = originKey(origin);
+    // 半径は足りている。バージョンを見ないと、trunk の無い古い道路のままになる
+    store.data.set(key, {
+      radius: 1650,
+      savedAt: now,
+      ways: [],
+      ...(networkVersion === undefined ? {} : { networkVersion }),
+    });
+    const first = vi.fn(fakeOverpass);
+    const area = await new AreaLoader(first, { store, now: () => now }).load(origin, 500);
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(area.start).toBeDefined();
+    expect(store.data.get(key)).toMatchObject({ networkVersion: WALK_NETWORK_VERSION, radius: 500 });
+
+    const second = vi.fn(fakeOverpass);
+    await new AreaLoader(second, { store, now: () => now }).load(origin, 500);
+    expect(second).not.toHaveBeenCalled();
   });
 
   it("保存先の読み込み中に起点が変わったら、古い起点のためにネットワークに行かない", async () => {

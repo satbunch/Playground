@@ -26,10 +26,19 @@ export interface WayStore {
   put(key: string, value: StoredWays): Promise<void>;
 }
 
+/**
+ * 徒歩ネットワークの定義。変えたら上げる。
+ * 保存データにこの値が無い（trunk を落としていた頃）か、違う場合は使わない。
+ * 上げないと、リロードや再訪で IndexedDB の古い道路が trunk を隠し続ける。
+ */
+export const WALK_NETWORK_VERSION = 2;
+
 export interface StoredWays {
   radius: number;
   ways: OsmWay[];
   savedAt: number;
+  /** この道路データを取ったときの徒歩ネットワークの定義。無いものは古い */
+  networkVersion?: number;
 }
 
 export interface AreaLoaderOptions {
@@ -48,6 +57,7 @@ export const originKey = ([lat, lon]: LatLon) => `${lat.toFixed(6)},${lon.toFixe
  * 道路データの取得とキャッシュ。
  * - 最近の起点を maxAreas 件までメモリに保持（古いものから捨てる）
  * - メモリに無ければ store（ブラウザ保存）を見て、それも無ければネットワークへ
+ * - 保存の networkVersion が現行と違うときは、半径が足りていても取り直す
  * - 取得中の要求で足りるなら、それを待つ（重複リクエストしない）
  * - 起点が変わったら、取得中の古い要求は中断する
  */
@@ -119,12 +129,19 @@ export class AreaLoader {
   private async loadWays(key: string, origin: LatLon, radius: number, signal: AbortSignal) {
     const stored = await this.store?.get(key).catch(() => undefined);
     signal.throwIfAborted();
-    if (stored && stored.radius >= radius && this.now() - stored.savedAt <= this.maxAgeMs) {
+    if (
+      stored &&
+      stored.networkVersion === WALK_NETWORK_VERSION &&
+      stored.radius >= radius &&
+      this.now() - stored.savedAt <= this.maxAgeMs
+    ) {
       // 保存済みの半径のほうが大きければ、その分も使える
       return { ways: stored.ways, radius: stored.radius };
     }
     const ways = await this.fetchWays(origin, radius, signal);
-    void this.store?.put(key, { radius, ways, savedAt: this.now() }).catch(() => {});
+    void this.store
+      ?.put(key, { radius, ways, savedAt: this.now(), networkVersion: WALK_NETWORK_VERSION })
+      .catch(() => {});
     return { ways, radius };
   }
 
