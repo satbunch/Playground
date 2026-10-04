@@ -15,7 +15,8 @@ const mpmInput = $<HTMLInputElement>("mpm");
 const statusEl = $("status");
 const legendEl = $("legend");
 
-const map = L.map("map").setView([35.681236, 139.767125], 15); // 東京駅
+// ダブルクリックは起点の変更に使うので、既定のダブルクリックズームは切る
+const map = L.map("map", { doubleClickZoom: false }).setView([35.681236, 139.767125], 15); // 東京駅
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
   attribution: "© OpenStreetMap contributors",
@@ -108,7 +109,8 @@ function renderLegend(max: number) {
     .join("");
 }
 
-map.on("click", (e: L.LeafletMouseEvent) => {
+// シングルクリックだと地図を触っただけで誤爆しやすいので、ダブルクリックで起点を変える
+map.on("dblclick", (e: L.LeafletMouseEvent) => {
   origin = [e.latlng.lat, e.latlng.lng];
   void update();
 });
