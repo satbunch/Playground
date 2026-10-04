@@ -15,6 +15,32 @@
       #status { font-size: 13px; color: #555; margin: 0; }
       .hint { font-size: 12px; color: #777; margin: 0; }
       #map { flex: 1; }
+      /* Leaflet の tooltip は地図コンテナの overflow で切れるので、地図の外に置く */
+      #walk-tip {
+        position: fixed;
+        z-index: 10000;
+        left: 0;
+        top: 0;
+        pointer-events: none;
+        background: #fff;
+        color: #1a1a1a;
+        border: 1px solid rgba(0, 0, 0, 0.35);
+        border-radius: 4px;
+        padding: 3px 8px;
+        font-size: 13px;
+        line-height: 1.4;
+        box-shadow: 0 1px 5px rgba(0, 0, 0, 0.35);
+        white-space: nowrap;
+        user-select: none;
+      }
+      #walk-tip i {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        margin-right: 6px;
+        vertical-align: middle;
+        border-radius: 2px;
+      }
       .stale { opacity: 0.35; transition: opacity 0.2s; }
       body.loading #status::before {
         content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 6px;
@@ -39,11 +65,12 @@
       <label>
         1分あたり <input id="mpm" type="number" min="1" value="80" /> m
       </label>
-      <p class="hint">地図をダブルクリックすると起点を変更できるよ</p>
+      <p class="hint">地図をダブルクリックすると起点を変更できるよ。色のついた道にカーソルを合わせると、その地点の徒歩分数が出るよ</p>
       <p id="status"></p>
       <div id="legend"></div>
     </div>
     <div id="map"></div>
+    <div id="walk-tip" role="tooltip" hidden><i aria-hidden="true"></i><span></span></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
