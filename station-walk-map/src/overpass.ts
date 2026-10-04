@@ -24,28 +24,40 @@ const sleep = (ms: number, signal?: AbortSignal) =>
   });
 
 /**
- * 各エンドポイントを順に試し、混雑系エラーなら次のサーバーへ。
- * 全部失敗したら少し待って rounds 回まで繰り返す。
+ * 各エンドポイントを順に試し、混雑系エラーやタイムアウトなら次のサーバーへ。
+ * 全部失敗したら少し待って rounds 回まで繰り返す。成功したら本文を返す。
+ * timeoutMs は1サーバーあたりの上限（本文のダウンロードまで含む）。
  */
 export async function fetchWithFallback(
   endpoints: string[],
   init: RequestInit,
-  { rounds = 2, delayMs = 1500 }: { rounds?: number; delayMs?: number } = {},
+  {
+    rounds = 2,
+    delayMs = 1500,
+    timeoutMs = 15_000,
+  }: { rounds?: number; delayMs?: number; timeoutMs?: number } = {},
   fetchFn: typeof fetch = fetch,
-): Promise<Response> {
+): Promise<string> {
+  const userSignal = init.signal ?? undefined;
   let lastError: Error = new Error("Overpass API error: no endpoint");
   for (let round = 0; round < rounds; round++) {
-    if (round > 0) await sleep(delayMs, init.signal ?? undefined);
+    if (round > 0) await sleep(delayMs, userSignal);
     for (const url of endpoints) {
+      const timeout = AbortSignal.timeout(timeoutMs);
+      const signal = userSignal ? AbortSignal.any([userSignal, timeout]) : timeout;
       try {
-        const res = await fetchFn(url, init);
-        if (res.ok) return res;
+        const res = await fetchFn(url, { ...init, signal });
+        if (res.ok) return await res.text();
         lastError = new Error(`Overpass API error: ${res.status}`);
         if (!RETRYABLE.has(res.status)) throw lastError;
       } catch (e) {
-        if (init.signal?.aborted || e === lastError) throw e;
-        // ネットワーク断・CORS 失敗なども次のサーバーで再試行
-        lastError = e instanceof Error ? e : new Error(String(e));
+        if (userSignal?.aborted || e === lastError) throw e;
+        // タイムアウト・ネットワーク断・CORS 失敗なども次のサーバーで再試行
+        lastError = timeout.aborted
+          ? new Error(`Overpass API timeout (${timeoutMs / 1000}s)`)
+          : e instanceof Error
+            ? e
+            : new Error(String(e));
       }
     }
   }
@@ -60,7 +72,7 @@ export async function fetchWalkableWays(
 ): Promise<OsmWay[]> {
   const [lat, lon] = center;
   const query = `
-    [out:json][timeout:30];
+    [out:json][timeout:25];
     way["highway"]
       ["highway"!~"^(motorway|motorway_link|trunk|trunk_link|proposed|construction|raceway|bus_guideway|bridleway)$"]
       ["foot"!~"^(no|private)$"]
@@ -68,13 +80,13 @@ export async function fetchWalkableWays(
       (around:${Math.ceil(radius)},${lat},${lon});
     out geom;`;
 
-  const res = await fetchWithFallback(ENDPOINTS, {
+  const text = await fetchWithFallback(ENDPOINTS, {
     method: "POST",
     body: new URLSearchParams({ data: query }),
     ...(signal ? { signal } : {}),
   });
 
-  const json = (await res.json()) as {
+  const json = JSON.parse(text) as {
     elements: { type: string; nodes?: number[]; geometry?: OsmWay["geometry"] }[];
   };
   return json.elements.flatMap((e) =>
