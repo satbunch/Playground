@@ -13,6 +13,7 @@
       #q { flex: 1; min-width: 0; }
       label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
       #status { font-size: 13px; color: #555; margin: 0; }
+      .hint { font-size: 12px; color: #777; margin: 0; }
       #map { flex: 1; }
       .stale { opacity: 0.35; transition: opacity 0.2s; }
       body.loading #status::before {
@@ -38,7 +39,8 @@
       <label>
         1分あたり <input id="mpm" type="number" min="1" value="80" /> m
       </label>
-      <p id="status">地図をクリックすると起点を変更できるよ</p>
+      <p class="hint">地図をダブルクリックすると起点を変更できるよ</p>
+      <p id="status"></p>
       <div id="legend"></div>
     </div>
     <div id="map"></div>
