@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>駅徒歩マップ</title>
+    <style>
+      html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+      body { display: flex; }
+      #panel { width: 280px; padding: 12px; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+      #panel h1 { font-size: 18px; margin: 0; }
+      #search { display: flex; gap: 4px; }
+      #q { flex: 1; min-width: 0; }
+      label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+      #status { font-size: 13px; color: #555; margin: 0; }
+      #map { flex: 1; }
+      @media (max-width: 640px) { body { flex-direction: column; } #panel { width: auto; } }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <h1>駅徒歩マップ</h1>
+      <form id="search">
+        <input id="q" type="text" placeholder="駅名・住所で検索" />
+        <button type="submit">検索</button>
+      </form>
+      <label>
+        徒歩 <output id="minutes-out">10</output> 分
+        <input id="minutes" type="range" min="1" max="20" value="10" />
+      </label>
+      <label>
+        1分あたり <input id="mpm" type="number" min="1" value="80" /> m
+      </label>
+      <p id="status">地図をクリックすると起点を変更できるよ</p>
+      <div id="legend"></div>
+    </div>
+    <div id="map"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
