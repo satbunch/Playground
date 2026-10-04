@@ -114,6 +114,8 @@ function render(area: Area, minutes: number, mpm: number) {
       color: colorFor(m, minutes),
       weight: ROAD_WEIGHT_PX,
       opacity: 0.9,
+      // 当たり判定は自分で行う。Leaflet の hover だと分数レイヤ単位にまとまってしまう
+      interactive: false,
     }).addTo(resultLayer);
   }
   renderLegend(minutes);
@@ -131,6 +133,7 @@ function renderLegend(max: number) {
 }
 
 function hideTip() {
+  map.getContainer().classList.remove("walk-hover");
   if (tipEl.hidden) return;
   tipEl.hidden = true;
   tipMinute = undefined;
@@ -145,6 +148,7 @@ function showTip(minutes: number, x: number, y: number) {
     tipSwatch.style.background = colorFor(minutes, minuteMax);
     tipText.textContent = `徒歩${minutes}分`;
   }
+  map.getContainer().classList.add("walk-hover");
   tipEl.hidden = false;
   const pad = 14;
   const margin = 8;
@@ -213,8 +217,9 @@ map.on("dblclick", (e: L.LeafletMouseEvent) => {
   void update();
 });
 
-// 地図の外の要素なので、Leaflet の popup / tooltip とは独立してカーソルを追う
-map.on("mousemove", (e: L.LeafletMouseEvent) => rememberPointer(e.originalEvent));
+// 結果の canvas は Leaflet の map mousemove を止めるので、DOM のイベントを直接見る。
+// オーバーレイは地図の外に出しているので、popup とは重ならない。
+map.getContainer().addEventListener("mousemove", (ev) => rememberPointer(ev));
 map.on("move zoom", scheduleTip);
 map.getContainer().addEventListener("mouseleave", () => {
   pointer = undefined;
