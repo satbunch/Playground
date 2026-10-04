@@ -1,5 +1,8 @@
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import iconRetinaUrl from "leaflet/dist/images/marker-icon-2x.png";
+import iconUrl from "leaflet/dist/images/marker-icon.png";
+import shadowUrl from "leaflet/dist/images/marker-shadow.png";
 import type { LatLon } from "./geo";
 import { AreaLoader, computeSegments, fetchRadius, type Area } from "./area";
 import { fetchWalkableWays, geocode } from "./overpass";
@@ -21,7 +24,9 @@ L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
 const resultPane = map.createPane("result");
 const renderer = L.canvas({ pane: "result" });
 const resultLayer = L.layerGroup().addTo(map);
-const marker = L.marker([35.681236, 139.767125]).addTo(map);
+// 既定アイコンは CSS から画像パスを推測するため、バンドル後に壊れる。明示的に渡す
+const icon = L.icon({ ...L.Icon.Default.prototype.options, iconUrl, iconRetinaUrl, shadowUrl });
+const marker = L.marker([35.681236, 139.767125], { icon }).addTo(map);
 
 /** 近い=緑 → 遠い=赤 */
 const colorFor = (minute: number, max: number) =>
