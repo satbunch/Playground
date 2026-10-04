@@ -20,46 +20,89 @@ export interface Area {
 
 export type FetchWays = (center: LatLon, radius: number, signal: AbortSignal) => Promise<OsmWay[]>;
 
-const sameOrigin = (a: LatLon, b: LatLon) => a[0] === b[0] && a[1] === b[1];
+/** 取得した道路データの永続化先（IndexedDB など）。失敗しても動作は続ける */
+export interface WayStore {
+  get(key: string): Promise<StoredWays | undefined>;
+  put(key: string, value: StoredWays): Promise<void>;
+}
+
+export interface StoredWays {
+  radius: number;
+  ways: OsmWay[];
+  savedAt: number;
+}
+
+export interface AreaLoaderOptions {
+  store?: WayStore;
+  /** メモリに保持する起点の数（グラフは大きいので少なめ） */
+  maxAreas?: number;
+  /** 保存データの有効期限。道路は頻繁には変わらないが、古すぎるのは避ける */
+  maxAgeMs?: number;
+  now?: () => number;
+}
+
+/** 同じ地点を同じキーにする（小数6桁 ≒ 0.1m） */
+export const originKey = ([lat, lon]: LatLon) => `${lat.toFixed(6)},${lon.toFixed(6)}`;
 
 /**
  * 道路データの取得とキャッシュ。
- * - 同じ起点で、取得済みの半径に収まる要求はネットワークに行かない
+ * - 最近の起点を maxAreas 件までメモリに保持（古いものから捨てる）
+ * - メモリに無ければ store（ブラウザ保存）を見て、それも無ければネットワークへ
  * - 取得中の要求で足りるなら、それを待つ（重複リクエストしない）
  * - 起点が変わったら、取得中の古い要求は中断する
  */
 export class AreaLoader {
-  private area: Area | undefined;
+  /** 挿入順 = 古い順。参照したら末尾に付け直す（LRU） */
+  private readonly areas = new Map<string, Area>();
   private pending:
-    | { origin: LatLon; radius: number; promise: Promise<Area>; controller: AbortController }
+    | { key: string; radius: number; promise: Promise<Area>; controller: AbortController }
     | undefined;
+  private readonly store: WayStore | undefined;
+  private readonly maxAreas: number;
+  private readonly maxAgeMs: number;
+  private readonly now: () => number;
 
-  constructor(private readonly fetchWays: FetchWays) {}
+  constructor(
+    private readonly fetchWays: FetchWays,
+    { store, maxAreas = 5, maxAgeMs = 7 * 24 * 60 * 60 * 1000, now = Date.now }: AreaLoaderOptions = {},
+  ) {
+    this.store = store;
+    this.maxAreas = maxAreas;
+    this.maxAgeMs = maxAgeMs;
+    this.now = now;
+  }
 
-  /** ネットワークに行かずに使えるエリア */
+  /** ネットワークにもストレージにも行かずに使えるエリア */
   cached(origin: LatLon, radius: number): Area | undefined {
-    const a = this.area;
-    return a && sameOrigin(a.origin, origin) && a.radius >= radius ? a : undefined;
+    const key = originKey(origin);
+    const a = this.areas.get(key);
+    if (!a || a.radius < radius) return undefined;
+    this.areas.delete(key);
+    this.areas.set(key, a);
+    return a;
   }
 
   load(origin: LatLon, radius: number): Promise<Area> {
     const hit = this.cached(origin, radius);
     if (hit) return Promise.resolve(hit);
 
+    const key = originKey(origin);
     const p = this.pending;
-    if (p && sameOrigin(p.origin, origin) && p.radius >= radius) return p.promise;
+    if (p && p.key === key && p.radius >= radius) return p.promise;
     // 古い起点の取得は不要。同じ起点でも半径が足りないなら取り直す
     p?.controller.abort();
 
     const controller = new AbortController();
-    const promise = this.fetchWays(origin, radius, controller.signal).then((ways) => {
-      const graph = buildGraph(ways);
-      const area: Area = { origin, radius, graph, start: nearestNode(graph, origin) };
-      // 先に大きいエリアが取れていたら、小さいもので上書きしない
-      if (!this.cached(origin, radius)) this.area = area;
-      return area;
-    });
-    const entry = { origin, radius, promise, controller };
+    const promise = this.loadWays(key, origin, radius, controller.signal).then(
+      ({ ways, radius: got }) => {
+        const graph = buildGraph(ways);
+        const area: Area = { origin, radius: got, graph, start: nearestNode(graph, origin) };
+        // 先に大きいエリアが取れていたら、小さいもので上書きしない
+        if (!this.cached(origin, got)) this.remember(key, area);
+        return area;
+      },
+    );
+    const entry = { key, radius, promise, controller };
     this.pending = entry;
     const clear = () => {
       if (this.pending === entry) this.pending = undefined;
@@ -71,6 +114,27 @@ export class AreaLoader {
   /** 後で使いそうな範囲を裏で取得しておく。失敗しても無視 */
   prefetch(origin: LatLon, radius: number): void {
     this.load(origin, radius).catch(() => {});
+  }
+
+  private async loadWays(key: string, origin: LatLon, radius: number, signal: AbortSignal) {
+    const stored = await this.store?.get(key).catch(() => undefined);
+    signal.throwIfAborted();
+    if (stored && stored.radius >= radius && this.now() - stored.savedAt <= this.maxAgeMs) {
+      // 保存済みの半径のほうが大きければ、その分も使える
+      return { ways: stored.ways, radius: stored.radius };
+    }
+    const ways = await this.fetchWays(origin, radius, signal);
+    void this.store?.put(key, { radius, ways, savedAt: this.now() }).catch(() => {});
+    return { ways, radius };
+  }
+
+  private remember(key: string, area: Area) {
+    this.areas.delete(key);
+    this.areas.set(key, area);
+    while (this.areas.size > this.maxAreas) {
+      const oldest = this.areas.keys().next().value!;
+      this.areas.delete(oldest);
+    }
   }
 }
 

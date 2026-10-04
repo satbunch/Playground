@@ -5,6 +5,7 @@ import iconUrl from "leaflet/dist/images/marker-icon.png";
 import shadowUrl from "leaflet/dist/images/marker-shadow.png";
 import type { LatLon } from "./geo";
 import { AreaLoader, computeSegments, fetchRadius, type Area } from "./area";
+import { createIdbStore } from "./idbStore";
 import { fetchWalkableWays, geocode } from "./overpass";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -33,7 +34,8 @@ const colorFor = (minute: number, max: number) =>
   `hsl(${120 - (120 * (minute - 1)) / Math.max(1, max - 1)}, 80%, 45%)`;
 
 let origin: LatLon = [35.681236, 139.767125];
-const loader = new AreaLoader(fetchWalkableWays);
+// 最近の起点はメモリに、取得した道路データはブラウザ（IndexedDB）にも保存
+const loader = new AreaLoader(fetchWalkableWays, { store: createIdbStore() });
 /** 最後に始めた update だけ描画するための通し番号 */
 let seq = 0;
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { AreaLoader, computeSegments, fetchRadius, type FetchWays } from "./area";
+import { AreaLoader, computeSegments, fetchRadius, originKey, type FetchWays, type StoredWays } from "./area";
 import { haversine, type LatLon } from "./geo";
 import type { OsmWay } from "./graph";
 
@@ -25,6 +25,9 @@ const fakeOverpass: FetchWays = async (center, radius) =>
 
 const origin: LatLon = [lat0, lon0];
 const other: LatLon = [lat0 + 0.001, lon0];
+
+/** 保存先の確認などの非同期処理が済んで、fetch が呼ばれるまで待つ */
+const tick = () => new Promise((r) => setTimeout(r, 0));
 
 /** 外から resolve できる fetch（取得中の状態を作る） */
 function deferredFetch() {
@@ -56,13 +59,13 @@ describe("AreaLoader のキャッシュ", () => {
     expect(f).toHaveBeenCalledTimes(2);
   });
 
-  it("起点が変わったら取り直す", async () => {
+  it("新しい起点は取得し、前の起点もキャッシュに残る", async () => {
     const f = vi.fn(fakeOverpass);
     const loader = new AreaLoader(f);
     await loader.load(origin, 500);
     await loader.load(other, 500);
     expect(f).toHaveBeenCalledTimes(2);
-    expect(loader.cached(origin, 500)).toBeUndefined();
+    expect(loader.cached(origin, 500)).toBeDefined();
   });
 
   it("取得中の要求で足りるなら相乗りする", async () => {
@@ -70,6 +73,7 @@ describe("AreaLoader のキャッシュ", () => {
     const loader = new AreaLoader(fetchWays);
     const big = loader.load(origin, 1650);
     const small = loader.load(origin, 500);
+    await tick();
     expect(calls).toHaveLength(1);
     calls[0]!.resolve();
     expect(await small).toBe(await big);
@@ -79,10 +83,25 @@ describe("AreaLoader のキャッシュ", () => {
     const { calls, fetchWays } = deferredFetch();
     const loader = new AreaLoader(fetchWays);
     const old = loader.load(origin, 500);
+    await tick();
+    expect(calls).toHaveLength(1);
     const next = loader.load(other, 500);
     expect(calls[0]!.signal.aborted).toBe(true);
     await expect(old).rejects.toMatchObject({ name: "AbortError" });
+    await tick();
     calls[1]!.resolve();
+    expect((await next).origin).toBe(other);
+  });
+
+  it("fetch を始める前に起点が変わったら、古い起点の fetch 自体をしない", async () => {
+    const { calls, fetchWays } = deferredFetch();
+    const loader = new AreaLoader(fetchWays);
+    const old = loader.load(origin, 500);
+    const next = loader.load(other, 500);
+    await expect(old).rejects.toMatchObject({ name: "AbortError" });
+    await tick();
+    expect(calls).toHaveLength(1);
+    calls[0]!.resolve();
     expect((await next).origin).toBe(other);
   });
 
@@ -90,6 +109,7 @@ describe("AreaLoader のキャッシュ", () => {
     const { calls, fetchWays } = deferredFetch();
     const loader = new AreaLoader(fetchWays);
     const big = loader.load(origin, 1650);
+    await tick();
     calls[0]!.resolve();
     await big;
     // 大きいエリアがあるので、小さい要求はキャッシュから返る
@@ -123,5 +143,124 @@ describe("computeSegments", () => {
     const area = await new AreaLoader(async () => []).load(origin, 500);
     expect(area.start).toBeUndefined();
     expect(computeSegments(area, 10, 80)).toEqual([]);
+  });
+});
+
+/** テスト用のメモリ上の WayStore */
+function memoryStore() {
+  const data = new Map<string, StoredWays>();
+  return {
+    data,
+    get: vi.fn(async (key: string) => data.get(key)),
+    put: vi.fn(async (key: string, value: StoredWays) => void data.set(key, value)),
+  };
+}
+
+const third: LatLon = [lat0, lon0 + 0.001];
+
+describe("AreaLoader の複数起点キャッシュ", () => {
+  it("起点を行き来しても再取得しない", async () => {
+    const f = vi.fn(fakeOverpass);
+    const loader = new AreaLoader(f);
+    await loader.load(origin, 500);
+    await loader.load(other, 500);
+    await loader.load(origin, 500);
+    await loader.load(other, 500);
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+
+  it("上限を超えたら一番長く使っていない起点を捨てる", async () => {
+    const f = vi.fn(fakeOverpass);
+    const loader = new AreaLoader(f, { maxAreas: 2 });
+    await loader.load(origin, 500);
+    await loader.load(other, 500);
+    loader.cached(origin, 500); // origin を使ったので、other が一番古くなる
+    await loader.load(third, 500);
+    expect(loader.cached(origin, 500)).toBeDefined();
+    expect(loader.cached(third, 500)).toBeDefined();
+    expect(loader.cached(other, 500)).toBeUndefined();
+  });
+
+  it("ほぼ同じ座標(0.1m未満の差)は同じ起点として扱う", () => {
+    expect(originKey([35.6812361, 139.7671251])).toBe(originKey([35.6812364, 139.7671249]));
+    expect(originKey([35.681236, 139.767125])).not.toBe(originKey([35.681246, 139.767125]));
+  });
+});
+
+describe("AreaLoader のブラウザ保存", () => {
+  const day = 24 * 60 * 60 * 1000;
+
+  it("取得したデータを保存し、次回(リロード後)はネットワークに行かない", async () => {
+    const store = memoryStore();
+    const f = vi.fn(fakeOverpass);
+    await new AreaLoader(f, { store }).load(origin, 500);
+    expect(store.put).toHaveBeenCalledTimes(1);
+
+    // リロード = メモリが空の新しい loader
+    const area = await new AreaLoader(f, { store }).load(origin, 500);
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(area.start).toBeDefined();
+  });
+
+  it("保存済みの半径が大きければ、その分もメモリに載る", async () => {
+    const store = memoryStore();
+    await new AreaLoader(fakeOverpass, { store }).load(origin, 1650);
+    const f = vi.fn(fakeOverpass);
+    const loader = new AreaLoader(f, { store });
+    await loader.load(origin, 500);
+    expect(loader.cached(origin, 1650)).toBeDefined();
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it("保存済みの半径が足りなければ取り直して上書きする", async () => {
+    const store = memoryStore();
+    await new AreaLoader(fakeOverpass, { store }).load(origin, 500);
+    const f = vi.fn(fakeOverpass);
+    await new AreaLoader(f, { store }).load(origin, 1650);
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(store.data.get(originKey(origin))!.radius).toBe(1650);
+  });
+
+  it("期限切れのデータは使わない", async () => {
+    const store = memoryStore();
+    let now = 0;
+    await new AreaLoader(fakeOverpass, { store, now: () => now }).load(origin, 500);
+
+    const f = vi.fn(fakeOverpass);
+    now = 7 * day; // ちょうど期限内
+    await new AreaLoader(f, { store, now: () => now }).load(origin, 500);
+    expect(f).not.toHaveBeenCalled();
+
+    now = 7 * day + 1;
+    await new AreaLoader(f, { store, now: () => now }).load(origin, 500);
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(store.data.get(originKey(origin))!.savedAt).toBe(now);
+  });
+
+  it("保存先が壊れていても(読み書き失敗)、ネットワークから取って表示できる", async () => {
+    const store = {
+      get: vi.fn().mockRejectedValue(new Error("IndexedDB is not available")),
+      put: vi.fn().mockRejectedValue(new Error("QuotaExceededError")),
+    };
+    const f = vi.fn(fakeOverpass);
+    const area = await new AreaLoader(f, { store }).load(origin, 500);
+    expect(area.start).toBeDefined();
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("保存先の読み込み中に起点が変わったら、古い起点のためにネットワークに行かない", async () => {
+    let release!: () => void;
+    const store = memoryStore();
+    store.get.mockImplementationOnce(
+      () => new Promise<undefined>((r) => (release = () => r(undefined))),
+    );
+    const f = vi.fn(fakeOverpass);
+    const loader = new AreaLoader(f, { store });
+    const old = loader.load(origin, 500);
+    const next = loader.load(other, 500);
+    release();
+    await expect(old).rejects.toMatchObject({ name: "AbortError" });
+    await next;
+    expect(f.mock.calls.map((c) => c[0])).toEqual([other]);
   });
 });
