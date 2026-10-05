@@ -1,5 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
-import { fetchWithFallback } from "./overpass";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  EXCLUDED_HIGHWAYS,
+  buildWalkableWaysQuery,
+  fetchWalkableWays,
+  fetchWithFallback,
+  isWalkableRoad,
+  selectWalkableWays,
+} from "./overpass";
 
 const res = (status: number, body = `{"status":${status}}`) => new Response(body, { status });
 const urls = ["https://a", "https://b"];
@@ -97,5 +104,153 @@ describe("fetchWithFallback", () => {
       await expect(p).rejects.toMatchObject({ name: "AbortError" });
       expect(f).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+const line = [
+  { lat: 35.716, lon: 140.126 },
+  { lat: 35.717, lon: 140.127 },
+];
+
+describe("徒歩に含める道路", () => {
+  it("クエリは trunk を落とさず、motorway と motorway_link は落とす", () => {
+    const query = buildWalkableWaysQuery(35.716, 140.126, 800);
+    expect(query).toContain('way["highway"]');
+    expect(query).toContain('["foot"!~"^(no|private)$"]');
+    expect(query).toContain('["access"!~"^(no|private)$"]');
+    expect(query).not.toContain("trunk");
+    for (const highway of EXCLUDED_HIGHWAYS) expect(query).toContain(highway);
+    expect(EXCLUDED_HIGHWAYS).not.toContain("trunk");
+    expect(EXCLUDED_HIGHWAYS).not.toContain("trunk_link");
+  });
+
+  it.each([
+    "trunk",
+    "primary",
+    "secondary",
+    "tertiary",
+    "unclassified",
+    "residential",
+    "living_street",
+    "service",
+    "track",
+    "path",
+    "footway",
+    "pedestrian",
+    "steps",
+    "cycleway",
+  ])("%s は歩ける", (highway) => {
+    expect(isWalkableRoad({ highway })).toBe(true);
+  });
+
+  it("成田街道のような trunk は歩ける。foot=no や自動車専用は歩かない", () => {
+    expect(isWalkableRoad({ highway: "trunk", name: "成田街道", ref: "296" })).toBe(true);
+    expect(isWalkableRoad({ highway: "trunk", name: "東京環状", ref: "16", foot: "no" })).toBe(false);
+    expect(isWalkableRoad({ highway: "trunk", access: "private" })).toBe(false);
+    expect(isWalkableRoad({ highway: "trunk", motorroad: "yes" })).toBe(false);
+  });
+
+  it("motorway と motorway_link は歩道タグがあっても歩かない", () => {
+    expect(isWalkableRoad({ highway: "motorway", sidewalk: "both", foot: "yes" })).toBe(false);
+    expect(
+      isWalkableRoad({
+        highway: "motorway_link",
+        sidewalk: "both",
+        foot: "yes",
+        bridge: "yes",
+        layer: "1",
+      }),
+    ).toBe(false);
+  });
+
+  it("trunk_link は地平で歩けるものだけ入れ、ランプは入れない", () => {
+    // 勝田台の連絡路: 一方通行・歩道なし、または立体
+    expect(isWalkableRoad({ highway: "trunk_link", lanes: "1", oneway: "yes" })).toBe(false);
+    expect(
+      isWalkableRoad({ highway: "trunk_link", bridge: "yes", layer: "2", oneway: "yes" }),
+    ).toBe(false);
+    // 立体に foot=yes や歩道が付いていてもランプの中心線は歩かない
+    expect(
+      isWalkableRoad({ highway: "trunk_link", bridge: "yes", layer: "1", foot: "yes", sidewalk: "left" }),
+    ).toBe(false);
+    expect(isWalkableRoad({ highway: "trunk_link", motorroad: "yes" })).toBe(false);
+    expect(isWalkableRoad({ highway: "trunk_link", oneway: "yes", foot: "no" })).toBe(false);
+    // 歩道が別 way のときは、リンクの中心線を歩道にしない
+    expect(isWalkableRoad({ highway: "trunk_link", oneway: "yes", sidewalk: "separate" })).toBe(false);
+    // 地平で歩行が明示されている一方通行、または一方通行でない接続路
+    expect(isWalkableRoad({ highway: "trunk_link", oneway: "yes", foot: "yes" })).toBe(true);
+    expect(isWalkableRoad({ highway: "trunk_link", oneway: "yes", sidewalk: "left" })).toBe(true);
+    expect(isWalkableRoad({ highway: "trunk_link", oneway: "yes", "sidewalk:right": "yes" })).toBe(true);
+    expect(isWalkableRoad({ highway: "trunk_link" })).toBe(true);
+    expect(isWalkableRoad({ highway: "trunk_link", bridge: "no", layer: "0" })).toBe(true);
+  });
+
+  it("取得結果では成田街道を残し、ランプと高速の連絡路は落とす", () => {
+    const ways = selectWalkableWays([
+      {
+        type: "way",
+        nodes: [1, 2],
+        geometry: line,
+        tags: { highway: "trunk", name: "成田街道", ref: "296" },
+      },
+      {
+        type: "way",
+        nodes: [3, 4],
+        geometry: line,
+        tags: { highway: "trunk_link", oneway: "yes", lanes: "1" },
+      },
+      {
+        type: "way",
+        nodes: [5, 6],
+        geometry: line,
+        tags: { highway: "trunk_link", bridge: "yes", layer: "2", oneway: "yes" },
+      },
+      {
+        type: "way",
+        nodes: [7, 8],
+        geometry: line,
+        tags: { highway: "motorway_link", sidewalk: "both", foot: "yes", bridge: "yes" },
+      },
+      {
+        type: "way",
+        nodes: [9, 10],
+        geometry: line,
+        tags: { highway: "residential" },
+      },
+    ]);
+    expect(ways.map((w) => w.nodes[0])).toEqual([1, 9]);
+  });
+});
+
+describe("fetchWalkableWays", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("trunk を含むクエリで取り、歩ける道だけ返す", async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const query = (init?.body as URLSearchParams).get("data") ?? "";
+      expect(query).toBe(buildWalkableWaysQuery(35.716, 140.126, 800));
+      return new Response(
+        JSON.stringify({
+          elements: [
+            {
+              type: "way",
+              nodes: [443008229, 2],
+              geometry: line,
+              tags: { highway: "trunk", name: "成田街道", ref: "296" },
+            },
+            {
+              type: "way",
+              nodes: [23024181, 4],
+              geometry: line,
+              tags: { highway: "trunk_link", oneway: "yes", lanes: "1", surface: "paved" },
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ways = await fetchWalkableWays([35.716, 140.126], 800);
+    expect(ways).toEqual([{ nodes: [443008229, 2], geometry: line }]);
   });
 });
